@@ -36,10 +36,11 @@ func fetchAndSummarize(keyword string, outputDir string, maxResults int) {
         file.Close()
     }
 
-    ctx := context.Background()
+    ctx, cancel := context.WithCancel(context.Background())
+    defer cancel()
     query := &arxiv.Query{
         Terms:             keyword,
-        MaxResultsPerPage: int64(maxResults),
+        MaxResultsPerPage: 20, // Reasonable page size
         SortBy:            arxiv.SortBySubmittedDate,
         SortOrder:         arxiv.SortDescending,
     }
@@ -49,12 +50,19 @@ func fetchAndSummarize(keyword string, outputDir string, maxResults int) {
     }
 
     var newIDs []string
+    totalProcessed := 0
+OuterLoop:
     for res := range resChan {
         if res.Err != nil {
             log.Printf("Error: %v", res.Err)
             continue
         }
         for _, entry := range res.Feed.Entry {
+            if totalProcessed >= maxResults {
+                cancel()
+                break OuterLoop
+            }
+            totalProcessed++
             id := entry.ID
             if fetchedIDs[id] {
                 continue
