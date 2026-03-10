@@ -11,6 +11,9 @@
 # Test binary, built with `go test -c`
 *.test
 
+# Test download directory
+test_output
+
 # Code coverage profiles and other test artifacts
 *.out
 coverage.*
@@ -30,3 +33,4 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+arxivfetcher_bin

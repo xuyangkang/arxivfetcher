@@ -1,56 +1,62 @@
 # arxivfetcher
 
-Yet another arxiv fetcher.
+A simple tool to fetch and track ArXiv papers based on keywords. It saves paper abstracts to date-stamped directories and maintains a history to avoid duplicates.
 
-## Environment Setup
+## Features
 
-### 1. Install Go
-Download and install the latest stable version of Go (v1.26.1):
+- **Keyword Search**: Fetch papers matching a specific query.
+- **Duplicate Prevention**: Tracks fetched paper IDs in a `history.txt` file.
+- **Organized Storage**: Saves papers in `YYYYMMDD` subdirectories within your specified output folder.
+- **Metadata Extraction**: Currently saves the title and abstract of each new paper.
+
+## Prerequisites
+
+- [Go](https://go.dev/doc/install) (v1.21 or later recommended)
+
+## Setup
+
+1. Clone the repository and navigate to the project directory.
+2. Install dependencies:
+   ```bash
+   go mod tidy
+   ```
+
+## Usage
+
+### Building the Application
+
 ```bash
-curl -OL https://go.dev/dl/go1.26.1.linux-amd64.tar.gz
-sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf go1.26.1.linux-amd64.tar.gz
-rm go1.26.1.linux-amd64.tar.gz
+go build -o arxivfetcher main.go
 ```
 
-### 2. Update PATH
-Add Go to your PATH in `~/.bashrc`, `~/.zshrc`, or `~/.profile`:
+### Running the Fetcher
+
+You can run the binary with various flags:
+
 ```bash
-# For bash
-echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
-source ~/.bashrc
-
-# For zsh
-echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.zshrc
-source ~/.zshrc
-
-# For universal (on most Linux systems)
-echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.profile
-source ~/.profile
+./arxivfetcher --keyword "pigeonhole principle" --output_dir ./my_papers --max_results 20
 ```
 
-### 3. Initialize Project
-```bash
-go mod tidy
+#### Available Flags:
+
+- `--keyword`: Search keyword for ArXiv (default: "string algorithm").
+- `--output_dir`: Directory to store `history.txt` and fetched papers (default: `~/arxiv`).
+- `--max_results`: Maximum number of results to fetch per request (default: 100).
+
+### Example Output Structure
+
+```text
+my_papers/
+├── history.txt
+└── 20260310/
+    ├── 2603.08558v1.txt
+    └── 2603.08567v1.txt
 ```
 
-## Running the Application
+### Scheduling with Cron
 
-To build the application:
-```bash
-go build -o arxivfetcher_bin main.go
-```
+To automate fetching (e.g., daily at 9 AM):
 
-To run the cron job:
 ```bash
-./arxivfetcher_bin
-```
-
-To run once for debugging:
-```bash
-./arxivfetcher_bin --run_once
-```
-
-Alternatively, you can use `go run`:
-```bash
-go run main.go
+0 9 * * * /path/to/arxivfetcher --keyword "machine learning" --output_dir /path/to/papers >> /path/to/fetcher.log 2>&1
 ```
