@@ -48,10 +48,6 @@ func fetchAndSummarize(keyword string, outputDir string, maxResults int) {
         log.Fatal(err)
     }
 
-    // Prepare daily directory
-    dateDir := time.Now().Format("20060102")
-    fullDateDir := filepath.Join(outputDir, dateDir)
-
     var newIDs []string
     for res := range resChan {
         if res.Err != nil {
@@ -63,6 +59,15 @@ func fetchAndSummarize(keyword string, outputDir string, maxResults int) {
             if fetchedIDs[id] {
                 continue
             }
+
+            // Prepare date-specific directory based on publication date
+            pubTime, err := time.Parse(time.RFC3339, string(entry.Published))
+            if err != nil {
+                log.Printf("Could not parse publication date %s: %v", entry.Published, err)
+                continue
+            }
+            dateDir := pubTime.Format("20060102")
+            fullDateDir := filepath.Join(outputDir, dateDir)
 
             // Create date directory on demand
             if err := os.MkdirAll(fullDateDir, 0755); err != nil {
