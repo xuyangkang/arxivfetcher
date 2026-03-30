@@ -1,16 +1,13 @@
 package main
 
 import (
-	"bufio"
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"path"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/orijtech/arxiv/v1"
@@ -30,47 +27,16 @@ type HistoryEntry struct {
 	Reason string `json:"reason,omitempty"`
 }
 
-func appendHistory(historyFile, id, status, reason string) {
-	f, err := os.OpenFile(historyFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		log.Printf("Could not open history file for writing: %v", err)
-		return
-	}
-	defer f.Close()
-
-	entry := HistoryEntry{ID: id, Status: status, Reason: reason}
-	b, err := json.Marshal(entry)
-	if err != nil {
-		log.Printf("Could not marshal history entry: %v", err)
-		return
-	}
-
-	f.Write(append(b, '\n'))
-}
-
-func fetchAndSummarize(ctx context.Context, keyword, outputDir string, maxResults int, saver PaperSaver, limiter *rate.Limiter, apiKey, baseURL, model string) {
-	// Ensure output directory exists
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
-		log.Fatalf("Could not create output directory: %v", err)
-	}
-
-	historyFile := filepath.Join(outputDir, "historyv2.txt")
+func fetchAndSummarize(ctx context.Context, keyword string, maxResults int, backend StorageBackend, limiter *rate.Limiter, apiKey, baseURL, model string) {
 	paperStatus := make(map[string]string)
 
-	file, err := os.Open(historyFile)
-	if err == nil {
-		scanner := bufio.NewScanner(file)
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			if line == "" {
-				continue
-			}
-			var entry HistoryEntry
-			if err := json.Unmarshal([]byte(line), &entry); err == nil {
-				paperStatus[entry.ID] = entry.Status
-			}
+	history, err := backend.LoadHistory(ctx)
+	if err != nil {
+		log.Printf("Warning: could not load history: %v", err)
+	} else {
+		for _, entry := range history {
+			paperStatus[entry.ID] = entry.Status
 		}
-		file.Close()
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -129,13 +95,13 @@ OuterLoop:
 
 				if !filterResp.Match {
 					fmt.Printf("Rejected: %s (Reason: %s)\n", shortID, filterResp.Justification)
-					appendHistory(historyFile, id, StatusUnrelated, filterResp.Justification)
+					backend.UpdateHistory(ctx, HistoryEntry{ID: id, Status: StatusUnrelated, Reason: filterResp.Justification})
 					paperStatus[id] = StatusUnrelated
 					continue
 				}
 
 				fmt.Printf("Matched: %s (Reason: %s)\n", shortID, filterResp.Justification)
-				appendHistory(historyFile, id, StatusRelated, filterResp.Justification)
+				backend.UpdateHistory(ctx, HistoryEntry{ID: id, Status: StatusRelated, Reason: filterResp.Justification})
 				paperStatus[id] = StatusRelated
 				status = StatusRelated
 			}
@@ -157,12 +123,12 @@ OuterLoop:
 				}
 
 				fmt.Printf("Saving %s...\n", shortID)
-				link, uploadErr := saver.Save(ctx, shortID, entry.Title, pdfFile)
+				link, uploadErr := backend.SavePaper(ctx, shortID, entry.Title, pdfFile)
 				if uploadErr != nil {
 					log.Printf("Save Error for %s: %v", id, uploadErr)
 				} else {
 					fmt.Printf("Saved successfully: %s\n", link)
-					appendHistory(historyFile, id, StatusUploaded, "")
+					backend.UpdateHistory(ctx, HistoryEntry{ID: id, Status: StatusUploaded})
 					paperStatus[id] = StatusUploaded
 					
 					// Clean up the temp file after successful upload
@@ -192,8 +158,11 @@ func main() {
 	flag.Parse()
 
 	limiter := rate.NewLimiter(rate.Limit(*rps), 1)
-	saver := &LocalSaver{BaseDir: *papersDir}
+	backend := &LocalSaver{
+		BaseDir:    *papersDir,
+		HistoryDir: *outputDir,
+	}
 
 	// If no API key is specified (from flag or env), we might still want to warn, but let's let filter Paper error gracefully
-	fetchAndSummarize(context.Background(), *keyword, *outputDir, *maxResults, saver, limiter, *apiKey, *baseURL, *model)
+	fetchAndSummarize(context.Background(), *keyword, *maxResults, backend, limiter, *apiKey, *baseURL, *model)
 }

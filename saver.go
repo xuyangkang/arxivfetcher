@@ -2,6 +2,8 @@ package main
 
 import "context"
 
-type PaperSaver interface {
-	Save(ctx context.Context, id, title, pdfPath string) (string, error)
+type StorageBackend interface {
+	SavePaper(ctx context.Context, id, title, localPdfPath string) (string, error)
+	LoadHistory(ctx context.Context) ([]HistoryEntry, error)
+	UpdateHistory(ctx context.Context, entry HistoryEntry) error
 }
