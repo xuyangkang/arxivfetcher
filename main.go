@@ -22,9 +22,10 @@ const (
 )
 
 type HistoryEntry struct {
-	ID     string `json:"id"`
-	Status string `json:"status"`
-	Reason string `json:"reason,omitempty"`
+	ID                string  `json:"id"`
+	Status            string  `json:"status"`
+	Reason            string  `json:"reason,omitempty"`
+	ContributionAngle *string `json:"contribution_angle,omitempty"`
 }
 
 func fetchAndSummarize(ctx context.Context, keyword string, maxResults int, backend StorageBackend, limiter *rate.Limiter, apiKey, baseURL, model string) {
@@ -106,7 +107,7 @@ OuterLoop:
 				}
 
 				fmt.Printf("Matched: %s (Reason: %s)\n", shortID, filterResp.Justification)
-				backend.UpdateHistory(ctx, HistoryEntry{ID: id, Status: StatusRelated, Reason: filterResp.Justification})
+				backend.UpdateHistory(ctx, HistoryEntry{ID: id, Status: StatusRelated, Reason: filterResp.Justification, ContributionAngle: filterResp.ContributionAngle})
 				paperStatus[id] = StatusRelated
 				status = StatusRelated
 			}
