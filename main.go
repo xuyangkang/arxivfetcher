@@ -51,12 +51,14 @@ func fetchAndSummarize(ctx context.Context, keyword string, maxResults int, back
 	}
 
 	// Make the API request
+	fmt.Printf("Starting ArXiv search for: %s\n", keyword)
 	resChan, _, err := arxiv.Search(ctx, query)
 	if err != nil {
 		log.Fatalf("ArXiv Search Initialization Error: %v", err)
 	}
 
 	totalProcessed := 0
+	totalDiscovered := 0
 OuterLoop:
 	for res := range resChan {
 		if res.Err != nil {
@@ -64,6 +66,7 @@ OuterLoop:
 			continue
 		}
 		for _, entry := range res.Feed.Entry {
+			totalDiscovered++
 			if totalProcessed >= maxResults {
 				cancel()
 				break OuterLoop
@@ -73,10 +76,12 @@ OuterLoop:
 
 			status := paperStatus[id]
 			if status == StatusUploaded || status == StatusUnrelated {
+				fmt.Printf("Skipping paper: %s (Status: %s)\n", path.Base(id), status)
 				continue
 			}
 
 			shortID := path.Base(id)
+			fmt.Printf("Processing paper: %s (Status: %s)\n", shortID, status)
 			if status == "" || status == StatusNew {
 				content := fmt.Sprintf("Title: %s\n\nAbstract: %s\n", entry.Title, entry.Summary.Body)
 
@@ -138,16 +143,15 @@ OuterLoop:
 		}
 		time.Sleep(3 * time.Second)
 	}
+	fmt.Printf("Search complete. Discovered %d total entries, processed %d.\n", totalDiscovered, totalProcessed)
 }
 
 func main() {
 	home, _ := os.UserHomeDir()
-	defaultOutputDir := filepath.Join(home, "arxiv")
 
 	keyword := flag.String("keyword", "string algorithm", "Search keyword for ArXiv")
-	outputDir := flag.String("output_dir", defaultOutputDir, "Directory to store history and papers")
+	outputDir := flag.String("output_dir", filepath.Join(home, "papers"), "Directory to store history and papers")
 	maxResults := flag.Int("max_results", 100, "Maximum number of results to fetch per page")
-	papersDir := flag.String("papers_dir", filepath.Join(home, "papers"), "Local directory to store useful papers")
 	rps := flag.Float64("rps", 0.5, "Requests per second allowed for AI and PDF downloads (default 0.5)")
 
 	// Filter API flags
@@ -159,8 +163,7 @@ func main() {
 
 	limiter := rate.NewLimiter(rate.Limit(*rps), 1)
 	backend := &LocalSaver{
-		BaseDir:    *papersDir,
-		HistoryDir: *outputDir,
+		OutputDir: *outputDir,
 	}
 
 	// If no API key is specified (from flag or env), we might still want to warn, but let's let filter Paper error gracefully

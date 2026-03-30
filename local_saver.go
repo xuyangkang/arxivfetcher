@@ -12,16 +12,15 @@ import (
 )
 
 type LocalSaver struct {
-	BaseDir    string
-	HistoryDir string
+	OutputDir string
 }
 
 func (s *LocalSaver) SavePaper(ctx context.Context, id, title, localPdfPath string) (string, error) {
-	if err := os.MkdirAll(s.BaseDir, 0755); err != nil {
-		return "", fmt.Errorf("failed to create base directory %s: %v", s.BaseDir, err)
+	if err := os.MkdirAll(s.OutputDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create output directory %s: %v", s.OutputDir, err)
 	}
 
-	destPath := filepath.Join(s.BaseDir, id+".pdf")
+	destPath := filepath.Join(s.OutputDir, id+".pdf")
 
 	src, err := os.Open(localPdfPath)
 	if err != nil {
@@ -43,7 +42,7 @@ func (s *LocalSaver) SavePaper(ctx context.Context, id, title, localPdfPath stri
 }
 
 func (s *LocalSaver) LoadHistory(ctx context.Context) ([]HistoryEntry, error) {
-	historyFile := filepath.Join(s.HistoryDir, "historyv2.txt")
+	historyFile := filepath.Join(s.OutputDir, "historyv2.txt")
 	var entries []HistoryEntry
 
 	file, err := os.Open(historyFile)
@@ -71,11 +70,11 @@ func (s *LocalSaver) LoadHistory(ctx context.Context) ([]HistoryEntry, error) {
 }
 
 func (s *LocalSaver) UpdateHistory(ctx context.Context, entry HistoryEntry) error {
-	if err := os.MkdirAll(s.HistoryDir, 0755); err != nil {
-		return fmt.Errorf("failed to create history directory: %v", err)
+	if err := os.MkdirAll(s.OutputDir, 0755); err != nil {
+		return fmt.Errorf("failed to create output directory: %v", err)
 	}
 
-	historyFile := filepath.Join(s.HistoryDir, "historyv2.txt")
+	historyFile := filepath.Join(s.OutputDir, "historyv2.txt")
 	f, err := os.OpenFile(historyFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return fmt.Errorf("failed to open history file for writing: %v", err)
