@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -15,30 +16,64 @@ import (
 	"github.com/orijtech/arxiv/v1"
 )
 
-func fetchAndSummarize(keyword, outputDir string, maxResults int, gDriveFolder, credsFile, apiKey, baseURL, model string) {
+const (
+	StatusNew       = "new"
+	StatusUnrelated = "unrelated"
+	StatusRelated   = "related"
+	StatusUploaded  = "uploaded"
+)
+
+type HistoryEntry struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+}
+
+func appendHistory(historyFile, id, status string) {
+	f, err := os.OpenFile(historyFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Printf("Could not open history file for writing: %v", err)
+		return
+	}
+	defer f.Close()
+
+	entry := HistoryEntry{ID: id, Status: status}
+	b, err := json.Marshal(entry)
+	if err != nil {
+		log.Printf("Could not marshal history entry: %v", err)
+		return
+	}
+
+	f.Write(append(b, '\n'))
+}
+
+func fetchAndSummarize(ctx context.Context, keyword, outputDir string, maxResults int, saver PaperSaver, apiKey, baseURL, model string) {
 	// Ensure output directory exists
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		log.Fatalf("Could not create output directory: %v", err)
 	}
 
-	historyFile := filepath.Join(outputDir, "history.txt")
-	fetchedIDs := make(map[string]bool)
+	historyFile := filepath.Join(outputDir, "historyv2.txt")
+	paperStatus := make(map[string]string)
 
 	file, err := os.Open(historyFile)
 	if err == nil {
 		scanner := bufio.NewScanner(file)
 		for scanner.Scan() {
-			id := strings.TrimSpace(scanner.Text())
-			if id != "" {
-				fetchedIDs[id] = true
+			line := strings.TrimSpace(scanner.Text())
+			if line == "" {
+				continue
+			}
+			var entry HistoryEntry
+			if err := json.Unmarshal([]byte(line), &entry); err == nil {
+				paperStatus[entry.ID] = entry.Status
 			}
 		}
 		file.Close()
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	
+
 	// Create arxiv Query
 	query := &arxiv.Query{
 		Terms:             keyword,
@@ -50,15 +85,14 @@ func fetchAndSummarize(keyword, outputDir string, maxResults int, gDriveFolder, 
 	// Make the API request
 	resChan, _, err := arxiv.Search(ctx, query)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("ArXiv Search Initialization Error: %v", err)
 	}
 
-	var newIDs []string
 	totalProcessed := 0
 OuterLoop:
 	for res := range resChan {
 		if res.Err != nil {
-			log.Printf("Error: %v", res.Err)
+			log.Printf("ArXiv Pagination/Fetch Error: %v", res.Err)
 			continue
 		}
 		for _, entry := range res.Feed.Entry {
@@ -68,84 +102,61 @@ OuterLoop:
 			}
 			totalProcessed++
 			id := entry.ID
-			if fetchedIDs[id] {
+
+			status := paperStatus[id]
+			if status == StatusUploaded || status == StatusUnrelated {
 				continue
 			}
 
 			shortID := path.Base(id)
-			pubTime, err := time.Parse(time.RFC3339, string(entry.Published))
-			if err != nil {
-				log.Printf("Could not parse publication date %s: %v", entry.Published, err)
-				continue
+			if status == "" || status == StatusNew {
+				content := fmt.Sprintf("Title: %s\n\nAbstract: %s\n", entry.Title, entry.Summary.Body)
+
+				// AI Filter validation
+				filterResp, filterErr := filterPaper(ctx, apiKey, baseURL, model, content)
+				if filterErr != nil {
+					log.Printf("Filter Error for %s: %v", id, filterErr)
+					continue
+				}
+
+				if !filterResp.Match {
+					fmt.Printf("Rejected: %s (Reason: %s)\n", shortID, filterResp.Justification)
+					appendHistory(historyFile, id, StatusUnrelated)
+					paperStatus[id] = StatusUnrelated
+					continue
+				}
+
+				fmt.Printf("Matched: %s (Reason: %s)\n", shortID, filterResp.Justification)
+				appendHistory(historyFile, id, StatusRelated)
+				paperStatus[id] = StatusRelated
+				status = StatusRelated
 			}
 
-			content := fmt.Sprintf("Title: %s\n\nAbstract: %s\n", entry.Title, entry.Summary.Body)
+			if status == StatusRelated {
+				pdfFile := filepath.Join(os.TempDir(), shortID+".pdf")
+				
+				// Download PDF to temp directory
+				fmt.Printf("Downloading PDF to temporary location: %s\n", pdfFile)
+				if err := downloadPDF(id, pdfFile); err != nil {
+					log.Printf("PDF Download Error for %s: %v", id, err)
+					continue
+				}
 
-			// AI Filter validation
-			filterResp, filterErr := filterPaper(ctx, apiKey, baseURL, model, content)
-			if filterErr != nil {
-				log.Printf("Filter Error for %s: %v", id, filterErr)
-				continue
-			}
-
-			if !filterResp.Match {
-				fmt.Printf("Rejected: %s (Reason: %s)\n", shortID, filterResp.Justification)
-				continue
-			}
-
-			fmt.Printf("Matched: %s (Reason: %s)\n", shortID, filterResp.Justification)
-
-			// Store metadata / history
-			dateDir := pubTime.Format("20060102")
-			fullDateDir := filepath.Join(outputDir, dateDir)
-			if err := os.MkdirAll(fullDateDir, 0755); err != nil {
-				log.Printf("Could not create date directory %s: %v", fullDateDir, err)
-				continue
-			}
-
-			paperFile := filepath.Join(fullDateDir, shortID+".txt")
-			if err := os.WriteFile(paperFile, []byte(content), 0644); err != nil {
-				log.Printf("Could not write paper file %s: %v", paperFile, err)
-				continue
-			}
-
-			// Download PDF
-			pdfFile := filepath.Join(fullDateDir, shortID+".pdf")
-			fmt.Printf("Downloading PDF: %s\n", pdfFile)
-			if err := downloadPDF(id, pdfFile); err != nil {
-				log.Printf("PDF Download Error for %s: %v", id, err)
-			} else {
-				// Upload to Google Drive if credentials exist
-				if _, statErr := os.Stat(credsFile); statErr == nil {
-					fmt.Printf("Uploading %s to Google Drive...\n", shortID)
-					link, uploadErr := uploadFileToDrive(ctx, credsFile, gDriveFolder, pdfFile, shortID+".pdf")
-					if uploadErr != nil {
-						log.Printf("Drive Upload Error for %s: %v", id, uploadErr)
-					} else {
-						fmt.Printf("Uploaded successfully: %s\n", link)
-					}
+				fmt.Printf("Saving %s...\n", shortID)
+				link, uploadErr := saver.Save(ctx, shortID, entry.Title, pdfFile)
+				if uploadErr != nil {
+					log.Printf("Save Error for %s: %v", id, uploadErr)
 				} else {
-					log.Printf("Skipping Google Drive upload for %s: Credentials file '%s' not found.", id, credsFile)
+					fmt.Printf("Saved successfully: %s\n", link)
+					appendHistory(historyFile, id, StatusUploaded)
+					paperStatus[id] = StatusUploaded
+					
+					// Clean up the temp file after successful upload
+					os.Remove(pdfFile)
 				}
 			}
-
-			newIDs = append(newIDs, id)
 		}
 		time.Sleep(3 * time.Second)
-	}
-
-	if len(newIDs) > 0 {
-		f, err := os.OpenFile(historyFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			log.Printf("Could not open history file for writing: %v", err)
-			return
-		}
-		defer f.Close()
-		for _, id := range newIDs {
-			if _, err := f.WriteString(id + "\n"); err != nil {
-				log.Printf("Could not write to history file: %v", err)
-			}
-		}
 	}
 }
 
@@ -156,16 +167,17 @@ func main() {
 	keyword := flag.String("keyword", "string algorithm", "Search keyword for ArXiv")
 	outputDir := flag.String("output_dir", defaultOutputDir, "Directory to store history and papers")
 	maxResults := flag.Int("max_results", 100, "Maximum number of results to fetch per page")
-	gDriveFolder := flag.String("drive_folder", "paper", "Google Drive folder name to upload papers")
-	credsFile := flag.String("credentials", filepath.Join(home, "credentials.json"), "Path to Google Drive credentials.json file")
+	papersDir := flag.String("papers_dir", filepath.Join(home, "papers"), "Local directory to store useful papers")
 
 	// Filter API flags
 	apiKey := flag.String("grok_apikey", os.Getenv("GROK_API_KEY"), "API key for Grok (or set GROK_API_KEY env var)")
 	baseURL := flag.String("grok_baseurl", "https://api.x.ai/v1", "Base URL for the API")
 	model := flag.String("grok_model", "grok-4-1-fast-reasoning", "Model to use for completion")
-	
+
 	flag.Parse()
 
+	saver := &LocalSaver{BaseDir: *papersDir}
+
 	// If no API key is specified (from flag or env), we might still want to warn, but let's let filter Paper error gracefully
-	fetchAndSummarize(*keyword, *outputDir, *maxResults, *gDriveFolder, *credsFile, *apiKey, *baseURL, *model)
+	fetchAndSummarize(context.Background(), *keyword, *outputDir, *maxResults, saver, *apiKey, *baseURL, *model)
 }
