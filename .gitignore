@@ -34,3 +34,7 @@ go.work.sum
 # .idea/
 # .vscode/
 arxivfetcher
+
+# Google Drive credentials
+credentials.json
+token.json
