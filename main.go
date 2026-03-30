@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/orijtech/arxiv/v1"
+	"golang.org/x/time/rate"
 )
 
 const (
@@ -26,9 +27,10 @@ const (
 type HistoryEntry struct {
 	ID     string `json:"id"`
 	Status string `json:"status"`
+	Reason string `json:"reason,omitempty"`
 }
 
-func appendHistory(historyFile, id, status string) {
+func appendHistory(historyFile, id, status, reason string) {
 	f, err := os.OpenFile(historyFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		log.Printf("Could not open history file for writing: %v", err)
@@ -36,7 +38,7 @@ func appendHistory(historyFile, id, status string) {
 	}
 	defer f.Close()
 
-	entry := HistoryEntry{ID: id, Status: status}
+	entry := HistoryEntry{ID: id, Status: status, Reason: reason}
 	b, err := json.Marshal(entry)
 	if err != nil {
 		log.Printf("Could not marshal history entry: %v", err)
@@ -46,7 +48,7 @@ func appendHistory(historyFile, id, status string) {
 	f.Write(append(b, '\n'))
 }
 
-func fetchAndSummarize(ctx context.Context, keyword, outputDir string, maxResults int, saver PaperSaver, apiKey, baseURL, model string) {
+func fetchAndSummarize(ctx context.Context, keyword, outputDir string, maxResults int, saver PaperSaver, limiter *rate.Limiter, apiKey, baseURL, model string) {
 	// Ensure output directory exists
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		log.Fatalf("Could not create output directory: %v", err)
@@ -112,6 +114,12 @@ OuterLoop:
 			if status == "" || status == StatusNew {
 				content := fmt.Sprintf("Title: %s\n\nAbstract: %s\n", entry.Title, entry.Summary.Body)
 
+				// Rate limit before AI filter
+				if err := limiter.Wait(ctx); err != nil {
+					log.Printf("Rate limit error: %v", err)
+					continue
+				}
+
 				// AI Filter validation
 				filterResp, filterErr := filterPaper(ctx, apiKey, baseURL, model, content)
 				if filterErr != nil {
@@ -121,13 +129,13 @@ OuterLoop:
 
 				if !filterResp.Match {
 					fmt.Printf("Rejected: %s (Reason: %s)\n", shortID, filterResp.Justification)
-					appendHistory(historyFile, id, StatusUnrelated)
+					appendHistory(historyFile, id, StatusUnrelated, filterResp.Justification)
 					paperStatus[id] = StatusUnrelated
 					continue
 				}
 
 				fmt.Printf("Matched: %s (Reason: %s)\n", shortID, filterResp.Justification)
-				appendHistory(historyFile, id, StatusRelated)
+				appendHistory(historyFile, id, StatusRelated, filterResp.Justification)
 				paperStatus[id] = StatusRelated
 				status = StatusRelated
 			}
@@ -135,6 +143,12 @@ OuterLoop:
 			if status == StatusRelated {
 				pdfFile := filepath.Join(os.TempDir(), shortID+".pdf")
 				
+				// Rate limit before PDF download
+				if err := limiter.Wait(ctx); err != nil {
+					log.Printf("Rate limit error: %v", err)
+					continue
+				}
+
 				// Download PDF to temp directory
 				fmt.Printf("Downloading PDF to temporary location: %s\n", pdfFile)
 				if err := downloadPDF(id, pdfFile); err != nil {
@@ -148,7 +162,7 @@ OuterLoop:
 					log.Printf("Save Error for %s: %v", id, uploadErr)
 				} else {
 					fmt.Printf("Saved successfully: %s\n", link)
-					appendHistory(historyFile, id, StatusUploaded)
+					appendHistory(historyFile, id, StatusUploaded, "")
 					paperStatus[id] = StatusUploaded
 					
 					// Clean up the temp file after successful upload
@@ -168,6 +182,7 @@ func main() {
 	outputDir := flag.String("output_dir", defaultOutputDir, "Directory to store history and papers")
 	maxResults := flag.Int("max_results", 100, "Maximum number of results to fetch per page")
 	papersDir := flag.String("papers_dir", filepath.Join(home, "papers"), "Local directory to store useful papers")
+	rps := flag.Float64("rps", 0.5, "Requests per second allowed for AI and PDF downloads (default 0.5)")
 
 	// Filter API flags
 	apiKey := flag.String("grok_apikey", os.Getenv("GROK_API_KEY"), "API key for Grok (or set GROK_API_KEY env var)")
@@ -176,8 +191,9 @@ func main() {
 
 	flag.Parse()
 
+	limiter := rate.NewLimiter(rate.Limit(*rps), 1)
 	saver := &LocalSaver{BaseDir: *papersDir}
 
 	// If no API key is specified (from flag or env), we might still want to warn, but let's let filter Paper error gracefully
-	fetchAndSummarize(context.Background(), *keyword, *outputDir, *maxResults, saver, *apiKey, *baseURL, *model)
+	fetchAndSummarize(context.Background(), *keyword, *outputDir, *maxResults, saver, limiter, *apiKey, *baseURL, *model)
 }

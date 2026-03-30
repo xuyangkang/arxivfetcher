@@ -7,7 +7,7 @@ A powerful, AI-driven CLI tool to fetch ArXiv papers based on keywords, rigorous
 - **Keyword Search**: Fetch papers matching complex Boolean queries natively via ArXiv's API.
 - **AI-Powered Triage**: Feeds abstract previews directly into Grok to determine if a paper genuinely aligns with your specific engineering/research skills (e.g. Parallel Computing vs purely theoretical data structures), rejecting anything that isn't a strong match.
 - **Automated PDF Downloads**: Bypasses manual abstraction reading; automatically extracts and downloads the full PDF of any paper flagged as `Matched`.
-- **JSON-Lines State Engine (v2)**: Tracks the pipeline phase of every paper utilizing a robust, crash-immune state machine recorded in `historyv2.txt` (`new` -> `unrelated` / `related` -> `uploaded`).
+- **JSON-Lines State Engine (v2)**: Tracks the pipeline phase of every paper using a structured JSON-lines format (recorded in `historyv2.txt`), including the **AI-generated reason** for approval or rejection.
 - **Flexible Storage**: Saves parsed PDFs straight to a configurable flattened directory (`~/papers`), discarding the bloat of abstract text files and subfolders. Extensible via the generic `PaperSaver` interface.
 
 ## Prerequisites
